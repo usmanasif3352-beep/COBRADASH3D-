@@ -14,6 +14,9 @@ import com.example.data.model.PlayerProfile
 import com.example.data.model.PlayerSettings
 import com.example.data.network.MultiplayerConnectionState
 import com.example.data.network.MultiplayerService
+import com.example.data.network.PublicRoomSummary
+import com.example.data.network.RemoteWorldSnapshot
+import com.example.data.network.ServerWallet
 import com.example.game.engine.MatchConfig
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
@@ -72,6 +75,21 @@ class CobraViewModel(
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
 
     val connectionState: StateFlow<MultiplayerConnectionState> = multiplayerService.connectionState
+    val worldSnapshot: StateFlow<RemoteWorldSnapshot?> = multiplayerService.worldSnapshot
+
+    private val _publicRooms = MutableStateFlow<List<PublicRoomSummary>>(emptyList())
+    val publicRooms: StateFlow<List<PublicRoomSummary>> = _publicRooms.asStateFlow()
+
+    private val _serverWallet = MutableStateFlow<ServerWallet?>(null)
+    val serverWallet: StateFlow<ServerWallet?> = _serverWallet.asStateFlow()
+
+    private val _selectedRegion = MutableStateFlow("GLOBAL")
+    val selectedRegion: StateFlow<String> = _selectedRegion.asStateFlow()
+
+    private val _regionalLeaderboardState =
+        MutableStateFlow<UiState<List<LeaderboardEntry>>>(UiState.Success(emptyList()))
+    val regionalLeaderboardState: StateFlow<UiState<List<LeaderboardEntry>>> =
+        _regionalLeaderboardState.asStateFlow()
 
     val profileState: StateFlow<UiState<PlayerProfile>> = if (currentUserId != null && !isGuestSession) {
         playerRepository.observeProfile(currentUserId)
@@ -239,7 +257,8 @@ class CobraViewModel(
         maxLength: Int,
         durationSec: Int,
         isVictory: Boolean,
-        deathReason: String?
+        deathReason: String?,
+        isOnlineMatch: Boolean = false
     ) {
         val earnedXp = (score / 10) + (kills * 25) + if (isVictory) 120 else 30
         _lastMatchSummary.value = MatchResultSummary(
@@ -254,6 +273,13 @@ class CobraViewModel(
             xpEarned = earnedXp,
             deathReason = deathReason
         )
+
+        if (isOnlineMatch) {
+            // Online scores, rankings, currency, and match history are persisted exclusively
+            // by the authoritative Node.js backend via Firebase Admin SDK. Never trust client results.
+            refreshWallet()
+            return
+        }
 
         val profile = activeProfile()
         val newKills = profile.totalKills + kills
@@ -331,30 +357,144 @@ class CobraViewModel(
         viewModelScope.launch { settingsDataStore.updateSettings(transform) }
     }
 
+    private suspend fun fetchFirebaseIdToken(): String? {
+        if (isGuestSession || currentUserId == null) return null
+        return try {
+            Firebase.auth.currentUser?.getIdToken(false)?.await()?.token
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun testMultiplayerServer() {
         viewModelScope.launch {
-            multiplayerService.checkServerHealth()
+            val res = multiplayerService.checkServerHealth()
+            _statusBanner.value = res.getOrElse { it.message ?: "Server unreachable" }
+        }
+    }
+
+    fun refreshPublicRooms() {
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken()
+            if (token.isNullOrBlank() || !multiplayerService.isConfigured()) {
+                _publicRooms.value = emptyList()
+                return@launch
+            }
+            multiplayerService.listPublicRooms(token).onSuccess { rooms ->
+                _publicRooms.value = rooms
+            }
+        }
+    }
+
+    fun refreshWallet() {
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken() ?: return@launch
+            if (!multiplayerService.isConfigured()) return@launch
+            multiplayerService.fetchWallet(token).onSuccess { wallet ->
+                _serverWallet.value = wallet
+                _selectedRegion.value = wallet.region
+            }
+        }
+    }
+
+    fun updatePlayerRegion(region: String) {
+        val clean = region.trim().uppercase()
+        _selectedRegion.value = clean
+        if (clean == "GLOBAL") return
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken()
+            if (token.isNullOrBlank() || !multiplayerService.isConfigured()) {
+                _regionalLeaderboardState.value = UiState.Error(
+                    "Configure HTTPS multiplayer server and sign in with Google for regional rankings."
+                )
+                return@launch
+            }
+            multiplayerService.updateRegion(token, clean)
+            loadRegionalLeaderboard(clean)
+        }
+    }
+
+    fun loadRegionalLeaderboard(region: String = _selectedRegion.value) {
+        val clean = region.trim().uppercase()
+        _selectedRegion.value = clean
+        if (clean == "GLOBAL") return
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken()
+            if (token.isNullOrBlank()) {
+                _regionalLeaderboardState.value = UiState.Error("Google Sign-In required for regional rankings.")
+                return@launch
+            }
+            if (!multiplayerService.isConfigured()) {
+                _regionalLeaderboardState.value = UiState.Error(
+                    "Set your HTTPS multiplayer backend endpoint in the Lobby to query regional rankings."
+                )
+                return@launch
+            }
+            _regionalLeaderboardState.value = UiState.Loading
+            val res = multiplayerService.fetchRegionalLeaderboard(token, clean)
+            _regionalLeaderboardState.value = res.fold(
+                onSuccess = { UiState.Success(it) },
+                onFailure = { UiState.Error(it.message ?: "Failed to load regional leaderboard") }
+            )
+        }
+    }
+
+    fun verifyPlayPurchase(productId: String, purchaseToken: String) {
+        if (productId.isBlank() || purchaseToken.isBlank()) return
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken()
+            if (token.isNullOrBlank()) {
+                _statusBanner.value = "Sign in with Google to verify Play purchases on server."
+                return@launch
+            }
+            if (!multiplayerService.isConfigured()) {
+                _statusBanner.value = "Configure HTTPS multiplayer server URL to verify Play purchases."
+                return@launch
+            }
+            val res = multiplayerService.verifyPurchase(token, productId, purchaseToken)
+            res.onSuccess { wallet ->
+                _serverWallet.value = wallet
+                _statusBanner.value = "Purchase verified by server: $productId"
+            }.onFailure { err ->
+                _statusBanner.value = "Purchase verification failed: ${err.message}"
+            }
+        }
+    }
+
+    fun unlockSkinWithServerCoins(skinId: String) {
+        viewModelScope.launch {
+            val token = fetchFirebaseIdToken()
+            if (token.isNullOrBlank() || !multiplayerService.isConfigured()) {
+                _statusBanner.value = "Online backend and Google Sign-In required for server coin unlocks."
+                return@launch
+            }
+            val res = multiplayerService.unlockSkinWithCoins(token, skinId)
+            res.onSuccess { wallet ->
+                _serverWallet.value = wallet
+                _statusBanner.value = "Skin unlocked by authoritative server!"
+            }.onFailure { err ->
+                _statusBanner.value = err.message ?: "Failed to unlock skin"
+            }
         }
     }
 
     fun createMultiplayerRoom() {
         viewModelScope.launch {
-            val token = try {
-                Firebase.auth.currentUser?.getIdToken(false)?.await()?.token
-            } catch (_: Exception) {
-                null
+            val token = fetchFirebaseIdToken()
+            val result = multiplayerService.createPrivateRoom(
+                token,
+                _selectedMode.value.id,
+                activeProfile().selectedArenaId
+            )
+            if (result.isFailure) {
+                _statusBanner.value = result.exceptionOrNull()?.message
             }
-            multiplayerService.createPrivateRoom(token, _selectedMode.value.id, activeProfile().selectedArenaId)
         }
     }
 
     fun joinMultiplayerRoom(code: String) {
         viewModelScope.launch {
-            val token = try {
-                Firebase.auth.currentUser?.getIdToken(false)?.await()?.token
-            } catch (_: Exception) {
-                null
-            }
+            val token = fetchFirebaseIdToken()
             val result = multiplayerService.joinRoom(token, code)
             if (result.isFailure) {
                 _statusBanner.value = result.exceptionOrNull()?.message
@@ -364,13 +504,25 @@ class CobraViewModel(
 
     fun queueMatchmaking() {
         viewModelScope.launch {
-            val token = try {
-                Firebase.auth.currentUser?.getIdToken(false)?.await()?.token
-            } catch (_: Exception) {
-                null
-            }
-            multiplayerService.queueMatchmaking(token, _selectedMode.value.id, activeProfile().selectedArenaId)
+            val token = fetchFirebaseIdToken()
+            multiplayerService.queueMatchmaking(
+                token,
+                _selectedMode.value.id,
+                activeProfile().selectedArenaId
+            )
         }
+    }
+
+    fun sendOnlineInput(yawRad: Float, boosting: Boolean) {
+        multiplayerService.sendInputState(yawRad, boosting)
+    }
+
+    fun sendOnlineAbility() {
+        multiplayerService.sendAbility()
+    }
+
+    fun sendOnlineRespawn() {
+        multiplayerService.sendRespawn()
     }
 
     fun disconnectMultiplayer() {

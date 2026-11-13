@@ -72,10 +72,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.model.Handedness
 import com.example.data.model.PlayerSettings
+import com.example.data.network.RemoteWorldSnapshot
 import com.example.game.engine.ArenaSimulation
 import com.example.game.engine.HudSnapshot
 import com.example.game.engine.MatchConfig
 import com.example.game.renderer.CobraGLSurfaceView
+import kotlinx.coroutines.delay
 import com.example.monetization.AdManager
 import com.example.ui.components.CobraBackdrop
 import com.example.ui.components.CobraPrimaryButton
@@ -99,6 +101,11 @@ fun GameplayScreen(
     playerLevel: Long,
     settings: PlayerSettings,
     isOnlineConnected: Boolean,
+    isOnlineMatch: Boolean = false,
+    worldSnapshot: RemoteWorldSnapshot? = null,
+    onSendOnlineInput: (yawRad: Float, boosting: Boolean) -> Unit = { _, _ -> },
+    onSendOnlineAbility: () -> Unit = {},
+    onSendOnlineRespawn: () -> Unit = {},
     onMatchFinished: (
         score: Int,
         kills: Int,
@@ -128,23 +135,56 @@ fun GameplayScreen(
         }
     }
 
-    val simulation = remember(matchConfig) {
+    val simulation = remember(matchConfig, isOnlineMatch) {
         ArenaSimulation(
             config = matchConfig,
-            maxOrbs = settings.graphicsQuality.maxOrbs
+            maxOrbs = settings.graphicsQuality.maxOrbs,
+            isOnlineAuthoritative = isOnlineMatch
         ).apply {
             sensitivity = settings.joystickSensitivity
         }
-    }
-
-    LaunchedEffect(settings.joystickSensitivity) {
-        simulation.sensitivity = settings.joystickSensitivity
     }
 
     var hud by remember { mutableStateOf(HudSnapshot()) }
     var isPaused by remember { mutableStateOf(false) }
     var glViewRef by remember { mutableStateOf<CobraGLSurfaceView?>(null) }
     var resultDispatched by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settings.joystickSensitivity) {
+        simulation.sensitivity = settings.joystickSensitivity
+    }
+
+    LaunchedEffect(worldSnapshot, isOnlineMatch) {
+        if (isOnlineMatch && worldSnapshot != null) {
+            synchronized(simulation) {
+                simulation.applyRemoteSnapshot(worldSnapshot)
+            }
+        }
+    }
+
+    LaunchedEffect(isOnlineMatch, isPaused) {
+        if (isOnlineMatch) {
+            var lastYaw = Float.NaN
+            var lastBoost = false
+            while (true) {
+                if (!isPaused) {
+                    val active = simulation.inputSteerActive
+                    val boost = simulation.inputBoost
+                    val targetYaw = if (active) {
+                        simulation.inputSteerAngleRad
+                    } else {
+                        synchronized(simulation) { simulation.playerSnake().yawRad }
+                    }
+                    if (active || boost || boost != lastBoost || targetYaw != lastYaw) {
+                        onSendOnlineInput(targetYaw, boost)
+                        lastYaw = targetYaw
+                        lastBoost = boost
+                    }
+                }
+                delay(40L)
+            }
+        }
+    }
 
     LaunchedEffect(isPaused) {
         glViewRef?.cobraRenderer?.isPaused = isPaused
@@ -396,7 +436,11 @@ fun GameplayScreen(
                                 if (settings.hapticsEnabled) {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
-                                synchronized(simulation) { simulation.triggerPlayerAbility() }
+                                if (isOnlineMatch) {
+                                    onSendOnlineAbility()
+                                } else {
+                                    synchronized(simulation) { simulation.triggerPlayerAbility() }
+                                }
                             },
                             enabled = abilityReady,
                             shape = CircleShape,
@@ -482,7 +526,11 @@ fun GameplayScreen(
                             CobraPrimaryButton(
                                 text = "RESPAWN",
                                 onClick = {
-                                    synchronized(simulation) { simulation.triggerPlayerRespawn() }
+                                    if (isOnlineMatch) {
+                                        onSendOnlineRespawn()
+                                    } else {
+                                        synchronized(simulation) { simulation.triggerPlayerRespawn() }
+                                    }
                                 },
                                 testTag = "respawn_button"
                             )

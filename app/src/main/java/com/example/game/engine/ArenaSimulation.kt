@@ -5,6 +5,7 @@ import com.example.data.model.GameCatalog
 import com.example.data.model.GameMode
 import com.example.data.model.PowerUpType
 import com.example.data.model.SnakeSkin
+import com.example.data.network.RemoteWorldSnapshot
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -15,7 +16,8 @@ import kotlin.random.Random
 
 class ArenaSimulation(
     val config: MatchConfig,
-    private val maxOrbs: Int = 140
+    private val maxOrbs: Int = 140,
+    val isOnlineAuthoritative: Boolean = false
 ) {
     private val rng = Random(System.currentTimeMillis())
     val snakes = mutableListOf<SnakeEntity>()
@@ -40,13 +42,18 @@ class ArenaSimulation(
     @Volatile var inputBoost: Boolean = false
 
     private var powerUpSpawnTimer = 4f
+    private var remoteCanRespawn: Boolean = config.mode.allowRespawn
+    private var lastRemotePlayerScore: Int = 0
+    private var lastRemotePlayerKills: Int = 0
 
     init {
         generateObstacles()
         spawnPlayer()
-        spawnBots()
-        repeat(maxOrbs * 3 / 4) { spawnRandomOrb() }
-        repeat(3) { spawnPowerUp() }
+        if (!isOnlineAuthoritative) {
+            spawnBots()
+            repeat(maxOrbs * 3 / 4) { spawnRandomOrb() }
+            repeat(3) { spawnPowerUp() }
+        }
     }
 
     private fun generateObstacles() {
@@ -176,6 +183,7 @@ class ArenaSimulation(
     fun playerSnake(): SnakeEntity = snakes.first()
 
     fun triggerPlayerRespawn() {
+        if (isOnlineAuthoritative) return
         val player = playerSnake()
         if (!config.mode.allowRespawn || matchFinished) return
         val angle = rng.nextFloat() * 2f * PI.toFloat()
@@ -188,6 +196,7 @@ class ArenaSimulation(
     }
 
     fun triggerPlayerAbility() {
+        if (isOnlineAuthoritative) return
         val player = playerSnake()
         if (!player.isAlive || player.abilityCooldownSec > 0f || matchFinished) return
         player.abilityCooldownSec = 8.0f
@@ -206,9 +215,163 @@ class ArenaSimulation(
         spawnFloatingText(player.headX, 2.6f, player.headZ, "COBRA SURGE!", 0xFF69F0AE.toInt())
     }
 
+    fun applyRemoteSnapshot(snapshot: RemoteWorldSnapshot) {
+        if (!isOnlineAuthoritative) return
+
+        arenaRadius = snapshot.arenaRadius
+        currentRingRadius = snapshot.currentRingRadius
+        elapsedSec = snapshot.elapsedSec
+        timeRemainingSec = snapshot.timeRemainingSec?.toFloat()
+        matchFinished = snapshot.matchFinished
+        isVictory = snapshot.isVictory
+        deathReason = snapshot.deathReason
+        remoteCanRespawn = snapshot.canRespawn
+
+        if (snapshot.obstacles.isNotEmpty()) {
+            obstacles.clear()
+            snapshot.obstacles.forEachIndexed { idx, obs ->
+                obstacles.add(
+                    ArenaObstacle(
+                        x = obs.x,
+                        z = obs.z,
+                        radius = obs.radius,
+                        height = 4.2f + (idx % 3) * 1.4f
+                    )
+                )
+            }
+        }
+
+        killFeed.clear()
+        snapshot.killFeed.takeLast(3).forEach { killFeed.addLast(it) }
+
+        val existingById = snakes.associateBy { it.id }
+        val localSnakes = snapshot.snakes.filter { it.uid == snapshot.localUid }
+        val otherSnakes = snapshot.snakes.filter { it.uid != snapshot.localUid }
+        val ordered = localSnakes + otherSnakes
+
+        if (ordered.isNotEmpty()) {
+            val rebuilt = ArrayList<SnakeEntity>(ordered.size)
+            for (remote in ordered) {
+                val isLocal = remote.uid == snapshot.localUid
+                val prev = existingById[remote.uid]
+                val skin = GameCatalog.skinById(remote.skinId)
+                val entity = prev ?: SnakeEntity(
+                    id = remote.uid,
+                    name = remote.nickname,
+                    isPlayer = isLocal,
+                    isAi = false,
+                    aiDifficulty = null,
+                    teamId = remote.teamId,
+                    skin = skin
+                )
+                entity.headX = remote.headX
+                entity.headZ = remote.headZ
+                entity.yawRad = remote.yawRad
+                entity.targetYawRad = remote.yawRad
+                entity.isBoosting = remote.isBoosting
+                entity.score = remote.score
+                entity.kills = remote.kills
+                entity.targetSegments = remote.length.coerceAtLeast(10)
+                entity.maxLengthReached = maxOf(entity.maxLengthReached, entity.targetSegments)
+                entity.isAlive = remote.isAlive
+                if (remote.boostMeter != null) {
+                    entity.boostMeter = remote.boostMeter
+                }
+                if (remote.abilityCooldownSec != null) {
+                    entity.abilityCooldownSec = remote.abilityCooldownSec
+                }
+                entity.activePowerUps.clear()
+                remote.activePowerUps.forEach { rp ->
+                    val pType = PowerUpType.entries.firstOrNull { it.name == rp.type }
+                    if (pType != null) {
+                        entity.activePowerUps.add(
+                            ActivePowerUp(pType, rp.remainingSec, pType.durationSec)
+                        )
+                    }
+                }
+
+                val headY = entity.headRadius() * 0.78f
+                entity.segments.clear()
+                val segCount = remote.segments.size.coerceAtLeast(1)
+                remote.segments.forEachIndexed { idx, (sx, sz) ->
+                    val segY = headY * (1f - (idx.toFloat() / (segCount + 4)) * 0.28f)
+                    entity.segments.add(Vec3(sx, segY, sz))
+                }
+
+                if (isLocal) {
+                    val deltaScore = remote.score - lastRemotePlayerScore
+                    val deltaKills = remote.kills - lastRemotePlayerKills
+                    if (deltaKills > 0 && lastRemotePlayerKills >= 0) {
+                        spawnFloatingText(remote.headX, 2.7f, remote.headZ, "ELIMINATED! +150", 0xFFFFD54F.toInt())
+                    } else if (deltaScore >= 20 && lastRemotePlayerScore > 0) {
+                        spawnFloatingText(remote.headX, 2.2f, remote.headZ, "+$deltaScore", 0xFF69F0AE.toInt())
+                    }
+                    lastRemotePlayerScore = remote.score
+                    lastRemotePlayerKills = remote.kills
+                }
+
+                rebuilt.add(entity)
+            }
+            snakes.clear()
+            snakes.addAll(rebuilt)
+        }
+
+        // Apply authoritative orbs
+        for (i in orbs.indices) {
+            if (i < snapshot.orbs.size) {
+                val ro = snapshot.orbs[i]
+                val orb = orbs[i]
+                orb.active = true
+                orb.x = ro.x
+                orb.z = ro.z
+                orb.value = ro.value
+                orb.isDropped = ro.isDropped
+                orb.radius = if (ro.isDropped || ro.value >= 25) 0.56f else 0.40f
+                orb.color = when {
+                    ro.isDropped -> 0xFFFFD54F.toInt()
+                    ro.value >= 25 -> 0xFF00E5FF.toInt()
+                    else -> 0xFF00E676.toInt()
+                }
+            } else {
+                orbs[i].active = false
+            }
+        }
+
+        // Apply authoritative world power-ups
+        for (i in powerUps.indices) {
+            if (i < snapshot.powerUps.size) {
+                val rpu = snapshot.powerUps[i]
+                val pType = PowerUpType.entries.firstOrNull { it.name == rpu.type } ?: PowerUpType.SPEED_BOOST
+                powerUps[i].active = true
+                powerUps[i].type = pType
+                powerUps[i].x = rpu.x
+                powerUps[i].z = rpu.z
+            } else {
+                powerUps[i].active = false
+            }
+        }
+    }
+
     fun step(rawDt: Float) {
         if (matchFinished) return
         val dt = rawDt.coerceIn(0.001f, 0.05f)
+        if (isOnlineAuthoritative) {
+            // Only advance purely visual animations & floating text fade in online mode;
+            // authoritative server snapshots drive positions, collisions, scores, and eliminations.
+            for (ind in floatingIndicators) {
+                if (!ind.active) continue
+                ind.lifeSec -= dt
+                ind.worldY += dt * 2.1f
+                if (ind.lifeSec <= 0f) ind.active = false
+            }
+            for (orb in orbs) {
+                if (orb.active) orb.pulsePhase += dt * 3.5f
+            }
+            for (pu in powerUps) {
+                if (pu.active) pu.bobPhase += dt * 2.8f
+            }
+            return
+        }
         elapsedSec += dt
 
         if (timeRemainingSec != null) {
@@ -785,7 +948,7 @@ class ArenaSimulation(
             matchFinished = matchFinished,
             isVictory = isVictory,
             deathReason = deathReason,
-            canRespawn = config.mode.allowRespawn && !matchFinished,
+            canRespawn = if (isOnlineAuthoritative) remoteCanRespawn && !matchFinished else config.mode.allowRespawn && !matchFinished,
             emeraldTeamScore = emeraldScore,
             crimsonTeamScore = crimsonScore
         )

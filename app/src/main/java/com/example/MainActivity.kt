@@ -36,6 +36,7 @@ import com.example.data.network.MultiplayerConnectionState
 import com.example.data.network.OkHttpWebSocketMultiplayerService
 import com.example.monetization.AdManager
 import com.example.monetization.BillingManager
+import com.example.monetization.BillingUiState
 import com.example.ui.auth.attemptAutoSignIn
 import com.example.ui.auth.authStateFlow
 import com.example.ui.auth.signOutFromGoogle
@@ -197,11 +198,24 @@ private fun AuthenticatedOrGuestNavHost(
     val selectedDifficulty by viewModel.selectedDifficulty.collectAsStateWithLifecycle()
     val lastMatchSummary by viewModel.lastMatchSummary.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val worldSnapshot by viewModel.worldSnapshot.collectAsStateWithLifecycle()
+    val publicRooms by viewModel.publicRooms.collectAsStateWithLifecycle()
+    val selectedRegion by viewModel.selectedRegion.collectAsStateWithLifecycle()
+    val regionalLeaderboardState by viewModel.regionalLeaderboardState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val billingState by billingManager.billingState.collectAsStateWithLifecycle()
     val rewardedStatus by adManager.rewardedStatus.collectAsStateWithLifecycle()
 
+    var activeOnlineMatch by remember { mutableStateOf(false) }
+
     val profile = (profileUiState as? UiState.Success)?.data ?: PlayerProfile()
+
+    LaunchedEffect(billingState) {
+        val pending = billingState as? BillingUiState.PurchasePendingVerification
+        if (pending != null) {
+            viewModel.verifyPlayPurchase(pending.productId, pending.purchaseToken)
+        }
+    }
 
     LaunchedEffect(statusBanner) {
         val msg = statusBanner
@@ -234,6 +248,7 @@ private fun AuthenticatedOrGuestNavHost(
                             if (selectedMode.requiresOnlineBackend) {
                                 navController.navigate(ScreenRoute.MULTIPLAYER_LOBBY.route)
                             } else {
+                                activeOnlineMatch = false
                                 navController.navigate(ScreenRoute.GAMEPLAY.route)
                             }
                         },
@@ -249,7 +264,10 @@ private fun AuthenticatedOrGuestNavHost(
                         selectedDifficulty = selectedDifficulty,
                         onSelectMode = viewModel::selectMode,
                         onSelectDifficulty = viewModel::selectDifficulty,
-                        onLaunchPlayableMode = { navController.navigate(ScreenRoute.GAMEPLAY.route) },
+                        onLaunchPlayableMode = {
+                            activeOnlineMatch = false
+                            navController.navigate(ScreenRoute.GAMEPLAY.route)
+                        },
                         onOpenMultiplayerLobby = { navController.navigate(ScreenRoute.MULTIPLAYER_LOBBY.route) },
                         onBack = { navController.popBackStack() }
                     )
@@ -339,27 +357,45 @@ private fun AuthenticatedOrGuestNavHost(
                         level = profile.level,
                         isGuestSession = isGuestSession,
                         leaderboardState = leaderboardState,
+                        selectedRegion = selectedRegion,
+                        regionalLeaderboardState = regionalLeaderboardState,
+                        onSelectRegion = viewModel::updatePlayerRegion,
                         onSwitchToGoogleSignIn = onSwitchToGoogleSignIn,
                         onBack = { navController.popBackStack() }
                     )
                 }
 
                 composable(ScreenRoute.MULTIPLAYER_LOBBY.route) {
+                    LaunchedEffect(Unit) {
+                        viewModel.refreshPublicRooms()
+                    }
                     MultiplayerLobbyScreen(
                         level = profile.level,
                         settings = settings,
                         connectionState = connectionState,
+                        isGuestSession = isGuestSession,
+                        publicRooms = publicRooms,
+                        onRefreshPublicRooms = viewModel::refreshPublicRooms,
+                        onEnterOnlineArena = {
+                            activeOnlineMatch = true
+                            navController.navigate(ScreenRoute.GAMEPLAY.route)
+                        },
+                        onSwitchToGoogleSignIn = onSwitchToGoogleSignIn,
                         onUpdateEndpoints = { rest, ws ->
                             viewModel.updateSettings {
                                 it.copy(multiplayerServerUrl = rest, multiplayerWsUrl = ws)
                             }
                         },
-                        onCheckServer = viewModel::testMultiplayerServer,
+                        onCheckServer = {
+                            viewModel.testMultiplayerServer()
+                            viewModel.refreshPublicRooms()
+                        },
                         onCreateRoom = viewModel::createMultiplayerRoom,
                         onJoinRoom = viewModel::joinMultiplayerRoom,
                         onQueueMatchmaking = viewModel::queueMatchmaking,
                         onDisconnect = viewModel::disconnectMultiplayer,
                         onPlayAiBattleInstead = {
+                            activeOnlineMatch = false
                             viewModel.selectMode(GameMode.AI_BATTLE)
                             navController.navigate(ScreenRoute.GAMEPLAY.route)
                         },
@@ -385,14 +421,32 @@ private fun AuthenticatedOrGuestNavHost(
                         playerLevel = profile.level,
                         settings = settings,
                         isOnlineConnected = connectionState is MultiplayerConnectionState.Connected,
+                        isOnlineMatch = activeOnlineMatch,
+                        worldSnapshot = worldSnapshot,
+                        onSendOnlineInput = viewModel::sendOnlineInput,
+                        onSendOnlineAbility = viewModel::sendOnlineAbility,
+                        onSendOnlineRespawn = viewModel::sendOnlineRespawn,
                         onMatchFinished = { score, kills, maxLen, dur, victory, reason ->
-                            viewModel.completeMatch(matchConfig, score, kills, maxLen, dur, victory, reason)
+                            viewModel.completeMatch(
+                                config = matchConfig,
+                                score = score,
+                                kills = kills,
+                                maxLength = maxLen,
+                                durationSec = dur,
+                                isVictory = victory,
+                                deathReason = reason,
+                                isOnlineMatch = activeOnlineMatch
+                            )
                             val dest = if (victory) ScreenRoute.VICTORY.route else ScreenRoute.DEFEAT.route
                             navController.navigate(dest) {
                                 popUpTo(ScreenRoute.GAMEPLAY.route) { inclusive = true }
                             }
                         },
                         onExitToMenu = {
+                            if (activeOnlineMatch) {
+                                viewModel.disconnectMultiplayer()
+                                activeOnlineMatch = false
+                            }
                             navController.popBackStack(ScreenRoute.MAIN_MENU.route, inclusive = false)
                         }
                     )

@@ -57,6 +57,7 @@ import com.example.data.model.MatchRecord
 import com.example.data.model.PlayerProfile
 import com.example.data.model.PlayerSettings
 import com.example.data.network.MultiplayerConnectionState
+import com.example.data.network.PublicRoomSummary
 import com.example.ui.components.CobraBackdrop
 import com.example.ui.components.CobraPrimaryButton
 import com.example.ui.components.CobraTopBar
@@ -250,15 +251,48 @@ fun LeaderboardScreen(
     level: Long,
     isGuestSession: Boolean,
     leaderboardState: UiState<List<LeaderboardEntry>>,
+    selectedRegion: String = "GLOBAL",
+    regionalLeaderboardState: UiState<List<LeaderboardEntry>> = UiState.Success(emptyList()),
+    onSelectRegion: (String) -> Unit = {},
     onSwitchToGoogleSignIn: () -> Unit,
     onBack: () -> Unit
 ) {
+    val regions = remember { listOf("GLOBAL", "NA", "EU", "AS", "SA", "OC", "AF") }
+    val activeState = if (selectedRegion == "GLOBAL") leaderboardState else regionalLeaderboardState
+
     CobraBackdrop {
         Column(
             modifier = Modifier.fillMaxSize().navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            CobraTopBar(title = "GLOBAL LEADERBOARD", level = level, onBack = onBack)
+            CobraTopBar(
+                title = if (selectedRegion == "GLOBAL") "GLOBAL LEADERBOARD" else "$selectedRegion LEADERBOARD",
+                level = level,
+                onBack = onBack
+            )
+
+            if (!isGuestSession) {
+                Row(
+                    modifier = Modifier
+                        .widthIn(max = 760.dp)
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    regions.forEach { region ->
+                        FilterChip(
+                            selected = selectedRegion == region,
+                            onClick = { onSelectRegion(region) },
+                            label = { Text(region, style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = EmeraldCore,
+                                selectedLabelColor = Color.Black
+                            )
+                        )
+                    }
+                }
+            }
 
             LazyColumn(
                 modifier = Modifier
@@ -275,21 +309,30 @@ fun LeaderboardScreen(
                             Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                                 Text("Google Sign-In Required for Cloud Leaderboard", style = MaterialTheme.typography.titleLarge, color = CyberCyan)
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text("Offline Guest sessions never fake online players. Sign in with Google to compete on Firestore global rankings.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                                Text("Offline Guest sessions never fake online players. Sign in with Google to compete on Firestore global and regional rankings.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                                 Spacer(modifier = Modifier.height(10.dp))
                                 CobraPrimaryButton(text = "SIGN IN WITH GOOGLE", onClick = onSwitchToGoogleSignIn, testTag = "leaderboard_signin_button")
                             }
                         }
                     }
                 } else {
-                    when (leaderboardState) {
+                    when (activeState) {
                         is UiState.Loading -> item { Text("Loading rankings...", color = TextSecondary) }
-                        is UiState.Error -> item { Text(leaderboardState.message, color = CrimsonDanger) }
+                        is UiState.Error -> item { Text(activeState.message, color = CrimsonDanger) }
                         is UiState.Success -> {
-                            if (leaderboardState.data.isEmpty()) {
-                                item { Text("No scores posted yet. Complete a match to claim #1!", color = TextSecondary) }
+                            if (activeState.data.isEmpty()) {
+                                item {
+                                    Text(
+                                        if (selectedRegion == "GLOBAL") {
+                                            "No scores posted yet. Complete a match to claim #1!"
+                                        } else {
+                                            "No regional scores posted in $selectedRegion yet."
+                                        },
+                                        color = TextSecondary
+                                    )
+                                }
                             } else {
-                                itemsIndexed(leaderboardState.data) { index, entry ->
+                                itemsIndexed(activeState.data) { index, entry ->
                                     Surface(
                                         color = if (index == 0) CardSurfaceElevated else CardSurface,
                                         shape = RoundedCornerShape(14.dp),
@@ -326,6 +369,11 @@ fun MultiplayerLobbyScreen(
     level: Long,
     settings: PlayerSettings,
     connectionState: MultiplayerConnectionState,
+    isGuestSession: Boolean = false,
+    publicRooms: List<PublicRoomSummary> = emptyList(),
+    onRefreshPublicRooms: () -> Unit = {},
+    onEnterOnlineArena: () -> Unit = {},
+    onSwitchToGoogleSignIn: () -> Unit = {},
     onUpdateEndpoints: (String, String) -> Unit,
     onCheckServer: () -> Unit,
     onCreateRoom: () -> Unit,
@@ -355,6 +403,32 @@ fun MultiplayerLobbyScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
+                if (isGuestSession) {
+                    item {
+                        Surface(
+                            color = CardSurfaceElevated,
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.5.dp, CyberCyan)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                                Text("Google Sign-In Required for Online Arenas", style = MaterialTheme.typography.titleLarge, color = CyberCyan)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Online multiplayer authenticates every WebSocket session with your Firebase ID token so scores and currency stay cheat-proof.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TextSecondary
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                CobraPrimaryButton(
+                                    text = "SIGN IN WITH GOOGLE",
+                                    onClick = onSwitchToGoogleSignIn,
+                                    testTag = "lobby_google_signin_button"
+                                )
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Surface(
                         color = CardSurfaceElevated,
@@ -389,6 +463,15 @@ fun MultiplayerLobbyScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.height(12.dp))
+                            if (connectionState is MultiplayerConnectionState.Connected) {
+                                CobraPrimaryButton(
+                                    text = "ENTER ONLINE ARENA",
+                                    onClick = onEnterOnlineArena,
+                                    testTag = "enter_online_arena_button",
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
                             CobraPrimaryButton(
                                 text = "CHECK SERVER & MATCHMAKE",
                                 onClick = onQueueMatchmaking,
@@ -401,6 +484,50 @@ fun MultiplayerLobbyScreen(
                                 modifier = Modifier.fillMaxWidth().height(48.dp).testTag("fallback_ai_battle_button")
                             ) {
                                 Text("Play Offline AI Battle / Practice Mode Instead", color = EmeraldCore)
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Surface(color = CardSurface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, BorderEmerald)) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Public Arena Rooms", style = MaterialTheme.typography.titleLarge, color = EmeraldCore)
+                                TextButton(onClick = onRefreshPublicRooms) {
+                                    Text("REFRESH", color = CyberCyan)
+                                }
+                            }
+                            if (publicRooms.isEmpty()) {
+                                Text(
+                                    "No active public rooms returned right now. Tap Check Server & Matchmake to open or join one.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TextSecondary
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                publicRooms.forEach { room ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text("Room ${room.roomCode} • ${room.modeId}", style = MaterialTheme.typography.titleMedium)
+                                            Text("${room.arenaId} • ${room.playerCount}/${room.maxPlayers} players", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { onJoinRoom(room.roomCode) },
+                                            modifier = Modifier.height(48.dp)
+                                        ) {
+                                            Text("JOIN", color = CyberCyan)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

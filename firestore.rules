@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPlayerProfile(data) {
+      return data.userId is string &&
+             data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.nickname is string &&
+             data.nickname.size() >= 2 && data.nickname.size() <= 24 &&
+             data.xp is int && data.xp >= 0 && data.xp <= 100000000 &&
+             data.level is int && data.level >= 1 && data.level <= 500 &&
+             data.highScore is int && data.highScore >= 0 && data.highScore <= 100000000 &&
+             data.totalKills is int && data.totalKills >= 0 && data.totalKills <= 10000000 &&
+             data.matchesPlayed is int && data.matchesPlayed >= 0 && data.matchesPlayed <= 10000000 &&
+             data.wins is int && data.wins >= 0 && data.wins <= 10000000 &&
+             data.selectedSkinId is string && data.selectedSkinId.size() >= 1 && data.selectedSkinId.size() <= 64 &&
+             data.selectedArenaId is string && data.selectedArenaId.size() >= 1 && data.selectedArenaId.size() <= 64 &&
+             data.unlockedSkinIds is list && data.unlockedSkinIds.size() <= 60 &&
+             (data.unlockedSkinIds.size() == 0 || data.unlockedSkinIds[0] is string) &&
+             data.unlockedAchievementIds is list && data.unlockedAchievementIds.size() <= 60 &&
+             (data.unlockedAchievementIds.size() == 0 || data.unlockedAchievementIds[0] is string) &&
+             data.battlePassXp is int && data.battlePassXp >= 0 && data.battlePassXp <= 10000000 &&
+             data.dailyRewardStreak is int && data.dailyRewardStreak >= 0 && data.dailyRewardStreak <= 3650 &&
+             data.lastDailyClaimDay is int && data.lastDailyClaimDay >= 0 && data.lastDailyClaimDay <= 1000000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidMatchRecord(data) {
+      return data.userId is string &&
+             data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.mode is string && data.mode.size() >= 1 && data.mode.size() <= 40 &&
+             data.arenaId is string && data.arenaId.size() >= 1 && data.arenaId.size() <= 64 &&
+             data.skinId is string && data.skinId.size() >= 1 && data.skinId.size() <= 64 &&
+             data.score is int && data.score >= 0 && data.score <= 100000000 &&
+             data.kills is int && data.kills >= 0 && data.kills <= 10000 &&
+             data.maxLength is int && data.maxLength >= 1 && data.maxLength <= 100000 &&
+             data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 86400 &&
+             data.victory is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isValidLeaderboardEntry(data) {
+      return data.userId is string &&
+             data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.nickname is string && data.nickname.size() >= 2 && data.nickname.size() <= 24 &&
+             data.highScore is int && data.highScore >= 0 && data.highScore <= 100000000 &&
+             data.level is int && data.level >= 1 && data.level <= 500 &&
+             data.wins is int && data.wins >= 0 && data.wins <= 10000000 &&
+             data.skinId is string && data.skinId.size() >= 1 && data.skinId.size() <= 64 &&
+             data.isPublic is bool && data.isPublic == true &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'userId', 'nickname', 'xp', 'level', 'highScore',
+                         'totalKills', 'matchesPlayed', 'wins', 'selectedSkinId',
+                         'selectedArenaId', 'unlockedSkinIds', 'unlockedAchievementIds',
+                         'battlePassXp', 'dailyRewardStreak', 'lastDailyClaimDay',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'nickname', 'xp', 'level', 'highScore',
+                         'totalKills', 'matchesPlayed', 'wins', 'selectedSkinId',
+                         'selectedArenaId', 'unlockedSkinIds', 'unlockedAchievementIds',
+                         'battlePassXp', 'dailyRewardStreak', 'lastDailyClaimDay',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidPlayerProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidPlayerProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'nickname', 'xp', 'level', 'highScore', 'totalKills',
+                         'matchesPlayed', 'wins', 'selectedSkinId', 'selectedArenaId',
+                         'unlockedSkinIds', 'unlockedAchievementIds', 'battlePassXp',
+                         'dailyRewardStreak', 'lastDailyClaimDay', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /matches/{matchId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(matchId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(matchId) &&
+                         request.auth.uid == userId &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'mode', 'arenaId', 'skinId', 'score',
+                           'kills', 'maxLength', 'durationSeconds', 'victory', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'mode', 'arenaId', 'skinId', 'score',
+                           'kills', 'maxLength', 'durationSeconds', 'victory', 'createdAt'
+                         ]) &&
+                         isValidMatchRecord(incoming());
+
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(matchId) && request.auth.uid == userId;
+      }
+    }
+
+    match /leaderboard_entries/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId) && (entryId == request.auth.uid || (resource != null && existing().isPublic == true));
+      allow list: if isSignedIn() && resource != null && existing().isPublic == true;
+
+      allow create: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       entryId == request.auth.uid &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'userId', 'nickname', 'highScore', 'level', 'wins',
+                         'skinId', 'isPublic', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'nickname', 'highScore', 'level', 'wins',
+                         'skinId', 'isPublic', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidLeaderboardEntry(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       entryId == request.auth.uid &&
+                       resource != null &&
+                       existing().userId == request.auth.uid &&
+                       isValidLeaderboardEntry(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().isPublic == existing().isPublic &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'nickname', 'highScore', 'level', 'wins', 'skinId', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(entryId) && (entryId == request.auth.uid || (resource != null && existing().userId == request.auth.uid));
+    }
+  }
+}

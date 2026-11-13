@@ -1,0 +1,236 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Cloud-synced player progression, selected cosmetics, and statistics for CobraDash3D.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the profile owner."
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Display name shown in arena and leaderboards."
+        },
+        "xp": {
+          "type": "integer",
+          "description": "Total experience points earned."
+        },
+        "level": {
+          "type": "integer",
+          "description": "Computed player level."
+        },
+        "highScore": {
+          "type": "integer",
+          "description": "Highest single-match score."
+        },
+        "totalKills": {
+          "type": "integer",
+          "description": "Cumulative opponent eliminations."
+        },
+        "matchesPlayed": {
+          "type": "integer",
+          "description": "Total completed matches."
+        },
+        "wins": {
+          "type": "integer",
+          "description": "Total first-place or survival victories."
+        },
+        "selectedSkinId": {
+          "type": "string",
+          "description": "Currently equipped snake skin ID."
+        },
+        "selectedArenaId": {
+          "type": "string",
+          "description": "Currently selected 3D arena ID."
+        },
+        "unlockedSkinIds": {
+          "type": "array",
+          "description": "IDs of skins unlocked through progression or cosmetics."
+        },
+        "unlockedAchievementIds": {
+          "type": "array",
+          "description": "IDs of unlocked achievements."
+        },
+        "battlePassXp": {
+          "type": "integer",
+          "description": "Seasonal Battle Pass XP."
+        },
+        "dailyRewardStreak": {
+          "type": "integer",
+          "description": "Consecutive daily reward claims."
+        },
+        "lastDailyClaimDay": {
+          "type": "integer",
+          "description": "Epoch day index of last daily reward claim."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "nickname",
+        "xp",
+        "level",
+        "highScore",
+        "totalKills",
+        "matchesPlayed",
+        "wins",
+        "selectedSkinId",
+        "selectedArenaId",
+        "unlockedSkinIds",
+        "unlockedAchievementIds",
+        "battlePassXp",
+        "dailyRewardStreak",
+        "lastDailyClaimDay",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MatchRecord": {
+      "title": "MatchRecord",
+      "description": "Immutable match history record stored under a player's user document.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Game mode identifier (e.g., PRACTICE, AI_BATTLE, CLASSIC_SURVIVAL)."
+        },
+        "arenaId": {
+          "type": "string",
+          "description": "Arena environment played."
+        },
+        "skinId": {
+          "type": "string",
+          "description": "Snake skin used during match."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Final score achieved."
+        },
+        "kills": {
+          "type": "integer",
+          "description": "Opponents eliminated in match."
+        },
+        "maxLength": {
+          "type": "integer",
+          "description": "Maximum snake segment length reached."
+        },
+        "durationSeconds": {
+          "type": "integer",
+          "description": "Match survival duration in seconds."
+        },
+        "victory": {
+          "type": "boolean",
+          "description": "Whether the player won or survived the match."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of match completion (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "mode",
+        "arenaId",
+        "skinId",
+        "score",
+        "kills",
+        "maxLength",
+        "durationSeconds",
+        "victory",
+        "createdAt"
+      ]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public non-PII high score entry for global rankings.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Public display nickname."
+        },
+        "highScore": {
+          "type": "integer",
+          "description": "Best score."
+        },
+        "level": {
+          "type": "integer",
+          "description": "Player level."
+        },
+        "wins": {
+          "type": "integer",
+          "description": "Total wins."
+        },
+        "skinId": {
+          "type": "string",
+          "description": "Equipped skin ID."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Flag allowing public leaderboard listing."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "userId",
+        "nickname",
+        "highScore",
+        "level",
+        "wins",
+        "skinId",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerProfile"
+      },
+      "description": "Owner-isolated player profile and progression data."
+    },
+    "/users/{userId}/matches/{matchId}": {
+      "schema": {
+        "$ref": "#/entities/MatchRecord"
+      },
+      "description": "Append-only match history subcollection owned by the player."
+    },
+    "/leaderboard_entries/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardEntry"
+      },
+      "description": "Non-PII global leaderboard entries owned by their respective players."
+    }
+  }
+}

@@ -12,9 +12,14 @@ import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 sealed interface AdLoadStatus {
     data object Idle : AdLoadStatus
@@ -25,10 +30,13 @@ sealed interface AdLoadStatus {
 
 class AdManager(private val appContext: Context) {
 
+    private val adScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var interstitialAd: InterstitialAd? = null
     private var rewardedAd: RewardedAd? = null
     private var lastInterstitialShownMs: Long = 0L
     private var adsRemoved: Boolean = false
+    private val initStarted = AtomicBoolean(false)
 
     private val _interstitialStatus = MutableStateFlow<AdLoadStatus>(AdLoadStatus.Idle)
     val interstitialStatus: StateFlow<AdLoadStatus> = _interstitialStatus.asStateFlow()
@@ -37,13 +45,19 @@ class AdManager(private val appContext: Context) {
     val rewardedStatus: StateFlow<AdLoadStatus> = _rewardedStatus.asStateFlow()
 
     fun initialize() {
-        try {
-            MobileAds.initialize(appContext) {
-                preloadInterstitial()
-                preloadRewarded()
+        if (!initStarted.compareAndSet(false, true)) return
+        adScope.launch {
+            try {
+                MobileAds.initialize(appContext) {
+                    adScope.launch(Dispatchers.Main) {
+                        preloadInterstitial()
+                        preloadRewarded()
+                    }
+                }
+            } catch (t: Throwable) {
+                initStarted.set(false)
+                Log.w(TAG, "MobileAds init skipped: ${t.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "MobileAds init skipped: ${e.message}")
         }
     }
 
@@ -54,44 +68,52 @@ class AdManager(private val appContext: Context) {
     fun preloadInterstitial() {
         if (adsRemoved) return
         _interstitialStatus.value = AdLoadStatus.Loading
-        val request = AdRequest.Builder().build()
-        InterstitialAd.load(
-            appContext,
-            TEST_INTERSTITIAL_AD_UNIT_ID,
-            request,
-            object : InterstitialAdLoadCallback() {
-                override fun onAdLoaded(ad: InterstitialAd) {
-                    interstitialAd = ad
-                    _interstitialStatus.value = AdLoadStatus.Ready
-                }
+        try {
+            val request = AdRequest.Builder().build()
+            InterstitialAd.load(
+                appContext,
+                TEST_INTERSTITIAL_AD_UNIT_ID,
+                request,
+                object : InterstitialAdLoadCallback() {
+                    override fun onAdLoaded(ad: InterstitialAd) {
+                        interstitialAd = ad
+                        _interstitialStatus.value = AdLoadStatus.Ready
+                    }
 
-                override fun onAdFailedToLoad(error: LoadAdError) {
-                    interstitialAd = null
-                    _interstitialStatus.value = AdLoadStatus.Failed(error.message)
+                    override fun onAdFailedToLoad(error: LoadAdError) {
+                        interstitialAd = null
+                        _interstitialStatus.value = AdLoadStatus.Failed(error.message)
+                    }
                 }
-            }
-        )
+            )
+        } catch (t: Throwable) {
+            _interstitialStatus.value = AdLoadStatus.Failed(t.message ?: "Ad load unavailable")
+        }
     }
 
     fun preloadRewarded() {
         _rewardedStatus.value = AdLoadStatus.Loading
-        val request = AdRequest.Builder().build()
-        RewardedAd.load(
-            appContext,
-            TEST_REWARDED_AD_UNIT_ID,
-            request,
-            object : RewardedAdLoadCallback() {
-                override fun onAdLoaded(ad: RewardedAd) {
-                    rewardedAd = ad
-                    _rewardedStatus.value = AdLoadStatus.Ready
-                }
+        try {
+            val request = AdRequest.Builder().build()
+            RewardedAd.load(
+                appContext,
+                TEST_REWARDED_AD_UNIT_ID,
+                request,
+                object : RewardedAdLoadCallback() {
+                    override fun onAdLoaded(ad: RewardedAd) {
+                        rewardedAd = ad
+                        _rewardedStatus.value = AdLoadStatus.Ready
+                    }
 
-                override fun onAdFailedToLoad(error: LoadAdError) {
-                    rewardedAd = null
-                    _rewardedStatus.value = AdLoadStatus.Failed(error.message)
+                    override fun onAdFailedToLoad(error: LoadAdError) {
+                        rewardedAd = null
+                        _rewardedStatus.value = AdLoadStatus.Failed(error.message)
+                    }
                 }
-            }
-        )
+            )
+        } catch (t: Throwable) {
+            _rewardedStatus.value = AdLoadStatus.Failed(t.message ?: "Rewarded ad unavailable")
+        }
     }
 
     fun showPostMatchInterstitialIfReady(activity: Activity, onFinished: () -> Unit) {
@@ -119,7 +141,13 @@ class AdManager(private val appContext: Context) {
                 onFinished()
             }
         }
-        ad.show(activity)
+        try {
+            ad.show(activity)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Interstitial show failed: ${t.message}")
+            interstitialAd = null
+            onFinished()
+        }
     }
 
     fun showRewardedAd(
@@ -148,8 +176,14 @@ class AdManager(private val appContext: Context) {
                 onUnavailable(adError.message)
             }
         }
-        ad.show(activity) { rewardItem ->
-            rewarded = rewardItem.amount > 0
+        try {
+            ad.show(activity) { rewardItem ->
+                rewarded = rewardItem.amount > 0
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Rewarded show failed: ${t.message}")
+            rewardedAd = null
+            onUnavailable(t.message ?: "Rewarded ad unavailable")
         }
     }
 

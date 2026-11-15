@@ -289,4 +289,11 @@ object MeshFactory {
         }
         return GpuMesh(verts.toFloatArray(), idx.toShortArray())
     }
+
+    fun createCube(halfExtent: Float = 0.5f): GpuMesh {
+        return GpuMesh(
+            CubeGeometryData.buildVertices(halfExtent),
+            CubeGeometryData.buildIndices()
+        )
+    }
 }

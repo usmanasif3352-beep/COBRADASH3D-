@@ -187,19 +187,17 @@ jobs:
           RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
 
-          RELEASE_NOTES="$(cat <<EOF
-          This is an automatically generated debug APK built by GitHub Actions.
-
-          - **GitHub Actions Run Number:** ${GITHUB_RUN_NUMBER}
-          - **GitHub Actions Run Attempt:** ${GITHUB_RUN_ATTEMPT}
-          - **Source Commit SHA:** ${GITHUB_SHA}
-
-          **Testing Notice:**
-          - This APK is intended for testing only.
-          - This APK is **not** a Google Play Store production release.
-          - This APK is signed only with a temporary debug keystore.
-          EOF
-          )"
+          RELEASE_NOTES="$(printf '%s\n' \
+            "This is an automatically generated debug APK built by GitHub Actions." \
+            "" \
+            "- **GitHub Actions Run Number:** ${GITHUB_RUN_NUMBER}" \
+            "- **GitHub Actions Run Attempt:** ${GITHUB_RUN_ATTEMPT}" \
+            "- **Source Commit SHA:** ${GITHUB_SHA}" \
+            "" \
+            "**Testing Notice:**" \
+            "- This APK is intended for testing only." \
+            "- This APK is **not** a Google Play Store production release." \
+            "- This APK is signed only with a temporary debug keystore.")"
 
           gh release create "$RELEASE_TAG" "$ASSET_PATH" \
             --target "${GITHUB_SHA}" \
